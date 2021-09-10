@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>; echo "Shell Injection"</title>
+  <meta name="description"
+    content="This is an introductory article about shell injection, a security vulnerability allowing an attacker to execute arbitrary code on the user&#8217;s machine.Th...">
+  <link rel="canonical" href="https://matklad.github.io//2021/07/30/shell-injection.html">
+  <link rel="alternate" type="application/rss+xml" title="matklad" href="https://matklad.github.io//feed.xml">
+
+  <style>
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Regular.woff2') format('woff2');
+    }
+
+    @font-face {
+      font-family: 'JetBrains Mono';
+      src: url('/css/JetBrainsMono-Bold.woff2') format('woff2');
+      ;
+      font-weight: bold;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      margin-block-start: 0;
+      margin-block-end: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-weight: 300;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 80ch;
+      padding-left: 2ch;
+      padding-right: 2ch;
+    }
+
+    .site-header {
+      width: 100%;
+      max-width: 80ch;
+      margin-bottom: 1.5rem;
+    }
+
+    .site-header>nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .site-header .-title {
+      flex-grow: 2;
+    }
+
+    .site-footer {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      width: 100%;
+      max-width: 80ch;
+      margin-top: 1rem;
+      height: 2rem;
+      padding-left: 1ch;
+      padding-right: 1ch;
+    }
+  </style>
+  <link rel="stylesheet" href=" /css/adoc.css">
+  <link rel="stylesheet" href=" /css/rouge-github.css">
+  <link rel="stylesheet" href=" /css/main.css">
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css?family=EB+Garamond:400,400italic,700,700italic%7COpen+Sans:300">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.4.0/css/font-awesome.min.css">
+</head>
+
+<body>
+  <header class="site-header">
+    <nav>
+      <a class="-title" href="/">matklad</a>
+      
+      
+      <a href="/about/">About</a>
+      
+      
+      
+      
+      
+      <a href="/resume/">Resume</a>
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+    </nav>
+  </header>
+
+  <main>
+    <article>
+  <h1>; echo "Shell Injection"</h1>
+  <div class="post-meta sect1">Jul 30, 2021</div>
+  <div id="preamble">
+<div class="sectionbody">
+<div class="paragraph">
+<p>This is an introductory article about <a href="https://en.wikipedia.org/wiki/Code_injection#Shell_injection">shell injection</a>, a security vulnerability allowing an attacker to execute arbitrary code on the user&#8217;s machine.
+This is a well-studied problem, and there are simple and efficient solutions to it.
+It&#8217;s relatively easy to design library API in such a way as to shield the application developer from the risk of shell injections.</p>
+</div>
+<div class="paragraph">
+<p>There are two reasons why I am writing this post.
+First, this year I&#8217;ve pointed out this issue in <a href="https://old.reddit.com/r/rust/comments/ls096k/rust_cmd_lib_v010_to_write_shellscript_like_tasks/goqlv3m/">three</a> <a href="https://lobste.rs/s/9yu5sl/after_discussion_here_i_created_lib_for#c_ckkova">different</a> <a href="https://lobste.rs/s/p1hict/zxpy_tool_for_shell_scripting_python#c_zuaapx">libraries</a>.
+It seems that, although the problem is well-studied, its not well known, so just repeating some things might help.
+Second, I&#8217;ve recently reported a related problem about one of the VS Code APIs, and I want to use this piece as an extended GitHub comment :-)</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="a-curious-case-of-pwnd-script"><a class="anchor" href="#a-curious-case-of-pwnd-script"></a>A Curious Case Of Pwnd Script</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Shell injection can happen when a program needs to execute another program, and one of the arguments is controlled by the user/attacker.
+As a model example, let&#8217;s write a quick script to read a list of URLs from stdin, and run <code>curl</code> for each one of those.</p>
+</div>
+<div class="paragraph">
+<p>That&#8217;s not realistic, but small and illustrative.
+This is what the script could look like in NodeJS:</p>
+</div>
+<div class="listingblock">
+<div class="title">curl-all.js</div>
+<div class="content">
+<pre class="rouge highlight"><code data-lang="js"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+</pre></td><td class="code"><pre><span class="kd">const</span> <span class="nx">readline</span> <span class="o">=</span> <span class="nx">require</span><span class="p">(</span><span class="dl">'</span><span class="s1">readline</span><span class="dl">'</span><span class="p">);</span>
+
+<span class="kd">const</span> <span class="nx">util</span> <span class="o">=</span> <span class="nx">require</span><span class="p">(</span><span class="dl">'</span><span class="s1">util</span><span class="dl">'</span><span class="p">);</span>
+<span class="kd">const</span> <span class="nx">exec</span> <span class="o">=</span> <span class="nx">util</span><span class="p">.</span><span class="nx">promisify</span><span class="p">(</span><span class="nx">require</span><span class="p">(</span><span class="dl">'</span><span class="s1">child_process</span><span class="dl">'</span><span class="p">).</span><span class="nx">exec</span><span class="p">);</span>
+
+<span class="k">async</span> <span class="kd">function</span> <span class="nx">main</span><span class="p">()</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">input</span> <span class="o">=</span> <span class="nx">readline</span><span class="p">.</span><span class="nx">createInterface</span><span class="p">({</span>
+    <span class="na">input</span><span class="p">:</span> <span class="nx">process</span><span class="p">.</span><span class="nx">stdin</span><span class="p">,</span>
+    <span class="na">output</span><span class="p">:</span> <span class="nx">process</span><span class="p">.</span><span class="nx">stdout</span><span class="p">,</span>
+    <span class="na">terminal</span><span class="p">:</span> <span class="kc">false</span><span class="p">,</span>
+  <span class="p">});</span>
+
+  <span class="k">for</span> <span class="k">await</span> <span class="p">(</span><span class="kd">const</span> <span class="nx">line</span> <span class="k">of</span> <span class="nx">input</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nx">line</span><span class="p">.</span><span class="nx">trim</span><span class="p">().</span><span class="nx">length</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+      <span class="kd">const</span> <span class="p">{</span> <span class="nx">stdout</span><span class="p">,</span> <span class="nx">stderr</span> <span class="p">}</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">exec</span><span class="p">(</span><span class="s2">`curl </span><span class="p">${</span><span class="nx">line</span><span class="p">}</span><span class="s2">`</span><span class="p">);</span>
+      <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">({</span> <span class="nx">stdout</span><span class="p">,</span> <span class="nx">stderr</span> <span class="p">});</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nx">main</span><span class="p">()</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>I would have written this in Rust, but, alas, it&#8217;s not vulnerable to this particular attack :)</p>
+</div>
+<div class="paragraph">
+<p>The interesting line is this one:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="js"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+</pre></td><td class="code"><pre><span class="kd">const</span> <span class="p">{</span> <span class="nx">stdout</span><span class="p">,</span> <span class="nx">stderr</span> <span class="p">}</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">exec</span><span class="p">(</span><span class="s2">`curl </span><span class="p">${</span><span class="nx">line</span><span class="p">}</span><span class="s2">`</span><span class="p">);</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Here, we use are using <a href="https://nodejs.org/api/child_process.html#child_process_child_process_exec_command_options_callback"><code>exec</code></a> API from node to spawn a child <code>curl</code> process, passing a line of input as an argument.</p>
+</div>
+<div class="paragraph">
+<p>Seems to work for simple cases?</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+</pre></td><td class="code"><pre>$ cat urls.txt
+https://example.com
+
+$ node curl-all.js &lt; urls.txt
+{
+  stdout: '&lt;!doctype html&gt;...&lt;/html&gt;\n',
+  stderr: '% Total    % Received ...'
+}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>But what if we use a slightly more imaginative input?</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+</pre></td><td class="code"><pre>$ node main.js &lt; malice_in_the_wonderland.txt
+{
+  stdout: 'PWNED, reading your secrets from /etc/passwd\n' +
+    'root:x:0:0:System administrator:/root:/bin/fish\n' +
+    '...' +
+    'matklad:x:1000:100::/home/matklad:/bin/fish\n',
+  stderr: "curl: try 'curl --help' for more information\n"
+}
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>That feels bad&#8201;&#8212;&#8201;seems that the script somehow reads the contents of my <code>/etc/passwd</code>.
+How did this happen, we&#8217;ve only invoked <code>curl</code>?</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="spawning-a-process"><a class="anchor" href="#spawning-a-process"></a>Spawning a Process</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>To understand what have just happened, we need to learn a bit about how spawning a process works in general.
+This section is somewhat UNIX-specific&#8201;&#8212;&#8201;things are implemented a bit differently on Windows.
+Nonetheless, the big picture conclusions hold there as well.</p>
+</div>
+<div class="paragraph">
+<p>The main API to run a program with command line arguments is the <code>exec</code> family of functions.
+For example, here&#8217;s <code>execve</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="c"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+</pre></td><td class="code"><pre><span class="kt">int</span> <span class="nf">execve</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">pathname</span><span class="p">,</span> <span class="kt">char</span> <span class="o">*</span><span class="k">const</span> <span class="n">argv</span><span class="p">[],</span>
+           <span class="kt">char</span> <span class="o">*</span><span class="k">const</span> <span class="n">envp</span><span class="p">[]);</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>It takes the name of the program (<code>pathname</code>), a list of command line arguments (<code>argv</code>), and a list of environment variable for the new process (<code>envp</code>), and uses those to run the specified binary.
+How exactly this happens is a fascinating story with many forks in the plot, but it is beyond the scope of the article.</p>
+</div>
+<div class="paragraph">
+<p>What is curious though, is that while the underlying system API wants an array of arguments, the <code>child_process.exec</code> function from node takes only a single string: <code>exec("curl http://example.com")</code>.</p>
+</div>
+<div class="paragraph">
+<p>Let&#8217;s find out!
+To do that, we&#8217;ll use the <a href="https://strace.io">strace</a> tool.
+This tool inspects (traces) all the system calls invoked by the program.
+We&#8217;ll ask <code>strace</code> to look for <code>execve</code> in particular, to understand how node&#8217;s <code>exec</code> maps to the underlying system&#8217;s API.
+We&#8217;ll need the <code>--follow</code> argument to trace all processes, and not just the top-level one.
+To reduce the amount of output and only print <code>execve</code>, we&#8217;ll use the <code>--trace</code> flag:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+4
+5
+6
+</pre></td><td class="code"><pre>$ strace --follow --trace execve node main.js &lt; urls.txt
+execve("/bin/node", ["node", "curl-all.js"], 0x7fff97776be0)
+...
+execve("/bin/sh", ["/bin/sh", "-c", "curl https://example.com"], 0x3fcacc0)
+...
+execve("/bin/curl", ["curl", "https://example.com"], 0xec4008)
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The first <code>execve</code> we see here is our original invocation of the <code>node</code> binary itself.
+The last one is what we want to do&#8201;&#8212;&#8201;spawn <code>curl</code> with a single argument, an url.
+And the middle one is what node&#8217;s <code>exec</code> actually does.</p>
+</div>
+<div class="paragraph">
+<p>Let&#8217;s take a closer look:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+</pre></td><td class="code"><pre>/bin/sh -c "curl https://example.com"
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Here, node invokes the <code>sh</code> binary (system&#8217;s shell) with two arguments: <code>-c</code> and the string we originally passed to <code>child_process.exec</code>.
+<code>-c</code> stands for command, and instructs the shell to interpret the value as a shell command, parse, it and then run it.</p>
+</div>
+<div class="paragraph">
+<p>In other words, rather then running the command directly, node asks the shell to do the heavy lifting.
+But the shell is an interpreter of the shell language, and, by carefully crafting the input to <code>exec</code>, we can ask it to run arbitrary code.
+In particular, that&#8217;s what we used as a payload in the bad example above:</p>
+</div>
+<div class="listingblock">
+<div class="title">malice_in_the_wonderland.txt</div>
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+</pre></td><td class="code"><pre>; echo 'PWNED, reading your secrets from /etc/passwd' &amp;&amp; cat /etc/passwd
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>After the string interpolation, the resulting command was</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+</pre></td><td class="code"><pre>/bin/sh -c "curl; echo '...' &amp;&amp; cat /etc/passwd"
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>That is, first run <code>curl</code>, then <code>echo</code>, then read the <code>/etc/passwd</code>.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="those-who-study-history-are-doomed-to-repeat-it"><a class="anchor" href="#those-who-study-history-are-doomed-to-repeat-it"></a>Those Who Study History Are Doomed to Repeat It</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>There&#8217;s an equivalent safe API in node: <a href="https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options"><code>spawn</code></a>.
+unlike <code>exec</code>, it uses an array of arguments rather then a single string.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="js"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+</pre></td><td class="code"><pre><span class="o">-</span>  <span class="nx">exec</span><span class="p">(</span><span class="s2">`curl </span><span class="p">${</span><span class="nx">line</span><span class="p">}</span><span class="s2">`</span><span class="p">)</span>
+<span class="o">+</span> <span class="nx">spawn</span><span class="p">(</span><span class="dl">"</span><span class="s2">curl</span><span class="dl">"</span><span class="p">,</span> <span class="nx">line</span><span class="p">)</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Internally, the API bypasses the shell and uses <code>execve</code> directly.
+Thus, this API is not vulnerable to shell injection&#8201;&#8212;&#8201;attacker can run <code>curl</code> with bad arguments, but it can&#8217;t run something else than <code>curl</code>.</p>
+</div>
+<div class="paragraph">
+<p>Note that it&#8217;s easy to implement <code>exec</code> in terms of <code>spawn</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="js"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno">1
+2
+3
+</pre></td><td class="code"><pre><span class="kd">function</span> <span class="nx">myExec</span><span class="p">(</span><span class="nx">cmd</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">spawn</span><span class="p">(</span><span class="dl">"</span><span class="s2">/bin/sh</span><span class="dl">"</span><span class="p">,</span> <span class="dl">"</span><span class="s2">-c</span><span class="dl">"</span><span class="p">,</span> <span class="nx">cmd</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>It&#8217;s a common pattern among many languages:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>there&#8217;s an <code>exec</code>-style function that takes a string and spawns <code>/bin/sh -c</code> under the hood,</p>
+</li>
+<li>
+<p>the docs for this function include a giant disclaimer, saying that using it with user input is a bad idea,</p>
+</li>
+<li>
+<p>there&#8217;s a safe alternative which takes arguments as an array and spawns the process directly.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>Why provide an exploitable API, while a safe version is possible and is more direct?
+I don&#8217;t know, but my guess is that it&#8217;s mostly just history.
+C has <a href="https://en.cppreference.com/w/c/program/system"><code>system</code></a>, Perl&#8217;s backticks correspond directly to that, Ruby got backticks from Perl, Python just has <code>system</code>, node was probably influenced by all these scripting languages.</p>
+</div>
+<div class="paragraph">
+<p>Note that security isn&#8217;t the only issue with <code>/bin/sh -c</code> based API.
+Read <a href="https://julialang.org/blog/2012/03/shelling-out-sucks/">this other post</a> to learn about the rest of the problems.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="take-aways"><a class="anchor" href="#take-aways"></a>Take Aways</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>If you are an <em>application developer</em>, be aware that this issue exists.
+Read the language documentation carefully&#8201;&#8212;&#8201;most likely, there are two flavors of process spawning functions.
+Note how shell injection is similar to <a href="https://en.wikipedia.org/wiki/SQL_injection">SQL injection</a> and <a href="https://en.wikipedia.org/wiki/Cross-site_scripting">XSS</a>.</p>
+</div>
+<div class="paragraph">
+<p>If you <em>develop a library</em> for conveniently working with external processes, use and expose only the shell-less API from the underlying platform.</p>
+</div>
+<div class="paragraph">
+<p>If you <em>build a new platform</em>, don&#8217;t provide <code>bin/sh -c</code> API in the first place.
+Be like <a href="https://deno.land/manual@v1.12.2/examples/subprocess">deno</a> (and also Go, Rust, Julia), don&#8217;t be like <a href="https://nodejs.org/api/child_process.html#child_process_child_process_exec_command_options_callback">node</a> (and also Python, Ruby, Perl, C).
+If you <em>have</em> to maintain such API for legacy reasons, clearly document the issue about shell injection.
+Documenting how to do <code>/bin/sh -c</code> by hand might also be a good idea.</p>
+</div>
+<div class="paragraph">
+<p>If you are <em>designing a programming language</em>, be careful with string interpolation syntax.
+It&#8217;s important that string interpolation can be used to spawn a command in a safe way.
+That mostly means that library authors should be able to deconstruct a <code>"cmd -j $arg1 -f $arg2"</code> literal into two (compile-time) arrays: <code>["cmd -j ", " -f "]</code> and <code>[arg1, arg2]</code>.
+If you don&#8217;t provide this feature in the language, library authors will split the interpolated string, which would be unsafe (not only for shelling out&#8201;&#8212;&#8201;for SQLing or HTMLing as well).
+Good examples to learn from are JavaScript&#8217;s
+<a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals#tagged_templates">tagged templates</a>
+and Julia&#8217;s
+<a href="https://julialang.org/blog/2013/04/put-this-in-your-pipe/#do-nothing_backticks">backticks</a>.</p>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="whats-about-vs-code"><a class="anchor" href="#whats-about-vs-code"></a>What&#8217;s About VS Code?</h2>
+<div class="sectionbody">
+<div class="paragraph">
+<p>Oh, right, the actual reason why I am writing this thing.
+The TL;DR for this section is that I want to complain about a specific API design a bit.</p>
+</div>
+<div class="paragraph">
+<p>This story begins in <a href="https://github.com/rust-analyzer/rust-analyzer/issues/9058">#9058</a>.</p>
+</div>
+<div class="paragraph">
+<p>I was happily hacking on some Rust library.
+At some point I pressed the &#8220;run tests&#8221; button in <a href="https://rust-analyzer.github.io">rust-analyzer</a>.
+And, surprised, accidentally pwned myself!</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+</pre></td><td class="code"><pre>Executing task: cargo test --doc -- Plotter&lt;D&gt;::line_fill --nocapture
+
+warning: An error occurred while redirecting file 'D'
+open: No such file or directory
+
+The terminal process
+/bin/fish '-c', 'cargo test --doc -- Plotter&lt;D&gt;::line_fill --nocapture'
+failed to launch (exit code: 1).
+
+Terminal will be reused by tasks, press any key to close it.
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>That was disappointing.
+C&#8217;mon, how come there&#8217;s a shell injection in the code I help to maintain?
+While this is not a big problem for rust-analyzer (our security model assumes trusted code, as each of <code>rustup</code>, <code>cargo</code>, and <code>rustc</code> can execute arbitrary code by design), it&#8217;s definitely was big blow to my aesthetics sensibilities!</p>
+</div>
+<div class="paragraph">
+<p>Looking at the git history, it was me who had missed &#8220;concatenate arguments into a single string&#8221; during review.
+So I was definitely a part of the problem here.
+But the other part is that the API that takes a single string exists at all.</p>
+</div>
+<div class="paragraph">
+<p>Let&#8217;s look at the API:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="ts"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+</pre></td><td class="code"><pre><span class="k">export</span> <span class="kd">class</span> <span class="nx">ShellExecution</span> <span class="p">{</span>
+  <span class="cm">/**
+    * Creates a shell execution with a full command line.
+    *
+    * @param commandLine The command line to execute.
+    * @param options Optional options for the started the shell.
+    */</span>
+  <span class="kd">constructor</span><span class="p">(</span>
+    <span class="nx">commandLine</span><span class="p">:</span> <span class="kr">string</span><span class="p">,</span>
+    <span class="nx">options</span><span class="p">?:</span> <span class="nx">ShellExecutionOptions</span>
+  <span class="p">);</span>
+
+  <span class="cm">/* ... */</span>
+<span class="p">}</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>So, this is exactly what I am describing&#8201;&#8212;&#8201;a process-spawning API that takes a single string.
+I guess, in this case this <em>might</em> even be justified&#8201;&#8212;&#8201;the API opens a literal shell in the GUI, and the user can interact with it after the command finishes.</p>
+</div>
+<div class="paragraph">
+<p>Anyway, after looking around I quickly found another API, which <em>seemed</em> (ominous music in the background) like what I was looking for:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre class="rouge highlight"><code data-lang="ts"><table class="linenotable"><tbody><tr><td class="linenos gl"><pre class="lineno"> 1
+ 2
+ 3
+ 4
+ 5
+ 6
+ 7
+ 8
+ 9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+</pre></td><td class="code"><pre>
+<span class="k">export</span> <span class="kd">class</span> <span class="nx">ShellExecution</span> <span class="p">{</span>
+  <span class="cm">/**
+    * Creates a shell execution with a command and arguments.
+    * For the real execution the editor will construct a
+    * command line from the command and the arguments. This
+    * is subject to interpretation especially when it comes to
+    * quoting. If full control over the command line is needed
+    * please use the constructor that creates a `ShellExecution`
+    * with the full command line.
+    *
+    * @param command The command to execute.
+    * @param args The command arguments.
+    * @param options Optional options for the started the shell.
+    */</span>
+  <span class="kd">constructor</span><span class="p">(</span>
+    <span class="nx">command</span><span class="p">:</span> <span class="kr">string</span> <span class="o">|</span> <span class="nx">ShellQuotedString</span><span class="p">,</span>
+    <span class="nx">args</span><span class="p">:</span> <span class="p">(</span><span class="kr">string</span> <span class="o">|</span> <span class="nx">ShellQuotedString</span><span class="p">)[],</span>
+    <span class="nx">options</span><span class="p">?:</span> <span class="nx">ShellExecutionOptions</span>
+  <span class="p">);</span>
+<span class="p">}</span>
+</pre></td></tr></tbody></table></code></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The API takes a array of strings.
+It also tries to say something about quoting, which is a good sign!
+The wording is perplexing, but seems that it struggles to explain to me that passing <code>["ls", "&gt;", "out.txt"]</code> won&#8217;t actually redirect, because <code>&gt;</code> will get quoted.
+This is exactly what I want!
+The absence of any kind of a security note on both APIs is concerning, but oh well.</p>
+</div>
+<div class="paragraph">
+<p>So, I refactored the code to use this second constructor, and, 🥁 🥁 🥁, it still had the exact same behavior!
+Turns out that this API takes an array of arguments, and just concatenates them, unless I explicitly say that each argument needs to be escaped.</p>
+</div>
+<div class="paragraph">
+<p>And <em>this</em> is what I am complaining about&#8201;&#8212;&#8201;that the API looks like it is safe for an untrusted user input, while it is not.
+This is misuse resistance resistance.</p>
+</div>
+<div class="paragraph">
+<p>That&#8217;s all, thanks for reading!</p>
+</div>
+</div>
+</div>
+</article>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a href="https://github.com/matklad/matklad.github.io/edit/master/_posts/2021-07-30-shell-injection.adoc">
+        <i class="fa fa-edit"></i> fix typo
+      </a>
+
+      <a href=" /feed.xml">
+        <i class="fa fa-rss"></i> rss
+      </a>
+
+      <a href="https://github.com/matklad">
+        <i class="fa fa-github"></i> matklad
+      </a>
+    </p>
+  </footer>
+</body>
+
+</html>
